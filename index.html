@@ -191,7 +191,7 @@
         let gameWidth, gameHeight;
 
         // Sound Synthesis (Tone.js)
-        let synth, beamSynthLoop, assimilateSynth, impactSynth, ambientSynth;
+        let synth, beamSynthLoop, assimilateSynth, impactSynth; // Removed ambientSynth for now
         let soundsReady = false;
 
         async function initSounds() {
@@ -202,9 +202,9 @@
                 
                 beamSynthLoop = new Tone.NoiseSynth({
                     noise: { type: 'pink' },
-                    envelope: { attack: 0.01, decay: 0.1, sustain: 1, release: 0.2 } // Longer sustain for loop
+                    envelope: { attack: 0.01, decay: 0.1, sustain: 1, release: 0.2 } 
                 }).toDestination();
-                beamSynthLoop.volume.value = -25; // Quieter for continuous sound
+                beamSynthLoop.volume.value = -25; 
 
                 assimilateSynth = new Tone.Synth({
                     oscillator: { type: 'sawtooth' },
@@ -215,12 +215,7 @@
                 impactSynth = new Tone.MembraneSynth().toDestination();
                 impactSynth.volume.value = -5;
 
-                // Ambient sound can be simpler or removed if too much
-                // ambientSynth = new Tone.Loop(() => {
-                //     if (soundsReady) synth.triggerAttackRelease("C2", "4n", Tone.now() + Math.random() * 2);
-                // }, "2m").start(0);
-                // ambientSynth.humanize = true;
-                Tone.Transport.start();
+                Tone.Transport.start(); // Ensure transport is started for any time-based events
                 
                 console.log("Tone.js initialized and transport started.");
                 soundsReady = true;
@@ -231,7 +226,8 @@
             }
         }
         
-        document.body.addEventListener('pointerdown', async () => { // Use pointerdown for broader compatibility
+        // Initialize sounds on first user interaction
+        document.body.addEventListener('pointerdown', async () => { 
             if (!soundsReady && Tone.context.state !== 'running') {
                 await initSounds();
             }
@@ -240,7 +236,7 @@
 
         // --- Game State & Entities ---
         const UFO_DEFAULT_BEAM_LENGTH = 150;
-        const UFO_MIN_BEAM_LENGTH = 30; // For assimilation
+        const UFO_MIN_BEAM_LENGTH = 30; 
         const UFO_MAX_BEAM_LENGTH = 300;
 
         const ufo = {
@@ -251,11 +247,12 @@
             energy: 100, integrity: 100,
             biomatter: 0, psycheTrace: 0,
             beamActive: false,
-            beamCurrentLength: UFO_DEFAULT_BEAM_LENGTH,
-            beamTargetLength: UFO_DEFAULT_BEAM_LENGTH,
+            beamCurrentLength: UFO_DEFAULT_BEAM_LENGTH, // Actual rendered length
+            beamTargetLength: UFO_DEFAULT_BEAM_LENGTH,  // Desired length (for dragging)
             beamWidth: 10,
             heldObject: null,
-            beamDragStartY: 0, // For beam length control
+            beamDragAnchorY: 0, // Y position on screen where beam drag started
+            beamDragInitialLength: 0, // Beam length when drag started
             isDraggingBeam: false
         };
 
@@ -267,9 +264,8 @@
         let activeChunks = new Map(); 
 
         // --- Input Handling ---
-        let touchStartX = 0, touchStartY = 0;
-        let currentTouchX = 0, currentTouchY = 0;
-        let isTouchingCanvas = false; // Specifically for UFO movement
+        let ufoMoveTouchId = null; // ID of the touch controlling UFO movement
+        let currentTouchX = 0, currentTouchY = 0; // Last known position for UFO movement drag
 
         // --- Helper Functions ---
         function debugLog(message) {
@@ -301,10 +297,10 @@
             return Math.floor(Math.random() * (max - min + 1)) + min;
         }
 
-        // --- Procedural Generation (largely unchanged) ---
+        // --- Procedural Generation ---
         function getChunkKey(chunkX, chunkY) { return `${chunkX},${chunkY}`; }
         function generateChunk(chunkX, chunkY) {
-            const chunk = { x: chunkX, y: chunkY, tiles: [], objects: [], baseColor: `rgb(${getRandomInt(30,60)}, ${getRandomInt(100,150)}, ${getRandomInt(30,60)})`};
+            const chunkData = { x: chunkX, y: chunkY, tiles: [], objects: [], baseColor: `rgb(${getRandomInt(30,60)}, ${getRandomInt(100,150)}, ${getRandomInt(30,60)})`};
             const numObjectsInChunk = getRandomInt(1, 5);
             for (let i = 0; i < numObjectsInChunk; i++) {
                 const objX = chunkX * CHUNK_SIZE * TILE_SIZE + Math.random() * CHUNK_SIZE * TILE_SIZE;
@@ -314,7 +310,7 @@
                 else if (objTypeRoll < 0.7) gameObjects.push(createTree(objX, objY));
                 else if (objTypeRoll < 0.8 && Math.random() < 0.1) gameObjects.push(createFarmhouse(objX, objY));
             }
-            return chunk;
+            return chunkData;
         }
         function updateActiveChunks() {
             const ufoChunkX = Math.floor(ufo.x / (CHUNK_SIZE * TILE_SIZE));
@@ -329,140 +325,146 @@
                 }
             }
             activeChunks = newActiveChunks;
-            gameObjects = gameObjects.filter(obj => {
+            gameObjects = gameObjects.filter(obj => { // Prune objects too far away
                 const distSq = (obj.x - ufo.x)**2 + (obj.y - ufo.y)**2;
-                const maxDist = (WORLD_CHUNK_RADIUS + 1) * CHUNK_SIZE * TILE_SIZE;
+                const maxDist = (WORLD_CHUNK_RADIUS + 2) * CHUNK_SIZE * TILE_SIZE; // Slightly larger prune radius
                 return distSq < maxDist**2;
             });
         }
 
-        // --- Game Object Creation (largely unchanged, added held object physics props) ---
+        // --- Game Object Creation ---
         function createCow(x, y) {
             return { type: 'cow', x, y, width: 30, height: 20, color: `rgb(200, 200, 180)`, 
                      speed: 0.5, vx: (Math.random() - 0.5) * 0.5, vy: (Math.random() - 0.5) * 0.5,
                      state: 'wandering', fleeTimer: 0, mass: 100, canBeAssimilated: true, biomatterYield: 10,
-                     heldAngle: 0, heldAngleVel: 0 }; // For swinging
+                     heldAngle: 0, heldAngleVel: 0, isFalling: false }; 
         }
         function createTree(x,y){
             return { type: 'tree', x, y, trunkWidth: 10, trunkHeight: 20, canopyRadius: 25,
                      trunkColor: `rgb(139,69,19)`, canopyColor: `rgb(34,139,34)`, mass: 150, canBeAssimilated: false,
-                     heldAngle: 0, heldAngleVel: 0 };
+                     heldAngle: 0, heldAngleVel: 0, isFalling: false };
         }
         function createFarmhouse(x,y){
              return { type: 'farmhouse', x, y, width: 80, height: 60, color: `rgb(200,180,160)`, roofColor: `rgb(150,50,50)`,
-                      mass: 1000, canBeAssimilated: false, heldAngle: 0, heldAngleVel: 0 };
+                      mass: 1000, canBeAssimilated: false, heldAngle: 0, heldAngleVel: 0, isFalling: false };
         }
 
         // --- UFO Controls & Beam ---
-        function handleCanvasPointerDown(e) {
+        // UFO Movement via Canvas Touch
+        canvas.addEventListener('pointerdown', (e) => {
+            if (e.target !== canvas || ufoMoveTouchId !== null) return; // Only one touch for movement, ensure it's on canvas
             e.preventDefault();
-            // Check if the event target is the canvas itself, not a button
-            if (e.target !== canvas) return;
+            ufoMoveTouchId = e.pointerId;
+            canvas.setPointerCapture(ufoMoveTouchId);
 
-            isTouchingCanvas = true;
             ufo.isMoving = true;
-            
             currentTouchX = e.clientX;
             currentTouchY = e.clientY;
-            // Convert touch to world coords for initial target to avoid jump
-            const worldPos = screenToWorld(currentTouchX, currentTouchY);
-            ufo.targetX = worldPos.x; 
-            ufo.targetY = worldPos.y;
+            
+            // Set target to current UFO world pos to avoid jump, then drag will update
+            ufo.targetX = ufo.x; 
+            ufo.targetY = ufo.y;
 
             if (!directiveMessageUI.classList.contains('hidden')) {
                 directiveMessageUI.classList.add('hidden');
             }
             if (!soundsReady && Tone.context.state !== 'running') { initSounds(); }
-            debugLog(`Canvas Touch Start: UFO Target ${ufo.targetX.toFixed(0)}, ${ufo.targetY.toFixed(0)}`);
-        }
+            debugLog(`UFO Move Start (Touch ID: ${ufoMoveTouchId})`);
+        }, { passive: false });
 
-        function handleCanvasPointerMove(e) {
+        canvas.addEventListener('pointermove', (e) => {
+            if (e.pointerId !== ufoMoveTouchId || !ufo.isMoving) return;
             e.preventDefault();
-            if (!isTouchingCanvas) return;
             
             const deltaX = e.clientX - currentTouchX;
             const deltaY = e.clientY - currentTouchY;
 
-            // Update UFO target world position directly by the drag delta
-            // The UFO movement logic in update() will handle moving towards this.
             ufo.targetX += deltaX; 
             ufo.targetY += deltaY;
             
             currentTouchX = e.clientX;
             currentTouchY = e.clientY;
-        }
+        }, { passive: false });
 
-        function handleCanvasPointerUp(e) {
-            e.preventDefault();
-            if (isTouchingCanvas) {
-                isTouchingCanvas = false;
-                // ufo.isMoving = false; // Let it glide
-                debugLog("Canvas Touch End");
+        function stopUfoMovement() {
+            if (ufoMoveTouchId !== null) {
+                // canvas.releasePointerCapture(ufoMoveTouchId); // This might cause issues if pointerup is on button
+                ufoMoveTouchId = null;
+                // ufo.isMoving = false; // Let it glide to a stop
+                debugLog("UFO Move End");
             }
         }
+        canvas.addEventListener('pointerup', (e) => {
+            if (e.pointerId === ufoMoveTouchId) {
+                e.preventDefault();
+                stopUfoMovement();
+            }
+        }, { passive: false });
+        canvas.addEventListener('pointercancel', (e) => {
+             if (e.pointerId === ufoMoveTouchId) {
+                e.preventDefault();
+                stopUfoMovement();
+            }
+        }, { passive: false });
         
         // Beam Button Logic
         let beamButtonTouchId = null;
-        let beamButtonInitialDragY = 0;
         let beamButtonWasDragged = false;
 
         beamButton.addEventListener('pointerdown', (e) => {
             e.preventDefault();
-            e.target.setPointerCapture(e.pointerId); // Capture pointer for this button
+            beamButton.setPointerCapture(e.pointerId); 
             beamButtonTouchId = e.pointerId;
             beamButtonWasDragged = false;
 
-            if (ufo.beamActive) {
+            if (ufo.beamActive) { // If beam is already on, this touch is for dragging length
                 ufo.isDraggingBeam = true;
-                beamButtonInitialDragY = e.clientY;
-                ufo.beamDragStartY = ufo.beamTargetLength; // Store current target length to drag from
+                ufo.beamDragAnchorY = e.clientY;
+                ufo.beamDragInitialLength = ufo.beamCurrentLength; 
                 debugLog("Beam drag START");
-            } else {
-                 // This path is for activating the beam on a tap (handled in pointerup if not dragged)
             }
+            // If beam is OFF, action (toggle) happens on pointerup IF it wasn't a drag
         });
 
         beamButton.addEventListener('pointermove', (e) => {
             if (!ufo.beamActive || !ufo.isDraggingBeam || e.pointerId !== beamButtonTouchId) return;
             e.preventDefault();
-            beamButtonWasDragged = true;
+            beamButtonWasDragged = true; // Mark that a drag occurred
 
-            const deltaY = e.clientY - beamButtonInitialDragY;
-            // Sensitivity: adjust how much drag affects length
+            const deltaY = e.clientY - ufo.beamDragAnchorY;
             const dragSensitivity = 1.5; 
-            ufo.beamTargetLength = ufo.beamDragStartY + deltaY * dragSensitivity;
+            ufo.beamTargetLength = ufo.beamDragInitialLength + deltaY * dragSensitivity;
             ufo.beamTargetLength = Math.max(UFO_MIN_BEAM_LENGTH, Math.min(UFO_MAX_BEAM_LENGTH, ufo.beamTargetLength));
-            // debugLog(`Beam dragging: TargetLength ${ufo.beamTargetLength.toFixed(0)}`);
         });
 
         beamButton.addEventListener('pointerup', (e) => {
-            e.preventDefault();
             if (e.pointerId !== beamButtonTouchId) return;
-            e.target.releasePointerCapture(e.pointerId);
-            beamButtonTouchId = null;
+            e.preventDefault();
+            beamButton.releasePointerCapture(e.pointerId);
+            
 
             if (ufo.isDraggingBeam) {
                 ufo.isDraggingBeam = false;
                 debugLog("Beam drag END");
                 // Beam remains active, length set by drag
-            } else { // Was a tap, not a drag
-                ufo.beamActive = !ufo.beamActive; // Toggle beam
+            } else if (!beamButtonWasDragged) { // Was a tap, not a drag
+                ufo.beamActive = !ufo.beamActive; 
                 if (ufo.beamActive) {
-                    ufo.beamTargetLength = UFO_DEFAULT_BEAM_LENGTH; // Reset to default on activation
-                    ufo.beamCurrentLength = UFO_DEFAULT_BEAM_LENGTH;
+                    ufo.beamTargetLength = UFO_DEFAULT_BEAM_LENGTH; 
+                    ufo.beamCurrentLength = UFO_DEFAULT_BEAM_LENGTH; // Snap to default length
                     if (soundsReady && beamSynthLoop && beamSynthLoop.state !== "started") {
                         beamSynthLoop.triggerAttack();
                     }
                     beamButton.classList.add('active');
                     debugLog("Beam ON (tap)");
-                } else {
+                } else { // Beam turned OFF by tap
                     if (soundsReady && beamSynthLoop && beamSynthLoop.state === "started") {
                         beamSynthLoop.triggerRelease();
                     }
                     beamButton.classList.remove('active');
-                    if (ufo.heldObject) { // Throw object
-                        ufo.heldObject.vx = ufo.dx * 1.5 + (ufo.heldObject.heldAngleVel || 0) * 5; // Add swing velocity
-                        ufo.heldObject.vy = ufo.dy * 1.5 - 5; // Upward push from release
+                    if (ufo.heldObject) { 
+                        ufo.heldObject.vx = ufo.dx * 1.2 + ufo.heldObject.heldAngleVel * ufo.beamCurrentLength * 0.1;
+                        ufo.heldObject.vy = ufo.dy * 1.2 - 3; // Add a little upward pop then gravity takes over
                         ufo.heldObject.isFalling = true;
                         debugLog(`Threw ${ufo.heldObject.type}`);
                         ufo.heldObject = null;
@@ -470,32 +472,35 @@
                     debugLog("Beam OFF (tap)");
                 }
             }
-            beamButtonWasDragged = false; // Reset for next interaction
+            beamButtonTouchId = null; // Reset touch ID for button
+            beamButtonWasDragged = false; 
         });
 
 
         // --- Game Logic Update ---
         function update(deltaTime) {
-            // UFO Movement towards target (from canvas drag)
-            if (ufo.isMoving || ufo.targetX !== ufo.x || ufo.targetY !== ufo.y) {
+            // UFO Movement
+            if (ufo.isMoving || Math.abs(ufo.targetX - ufo.x) > 0.1 || Math.abs(ufo.targetY - ufo.y) > 0.1) {
                 const angle = Math.atan2(ufo.targetY - ufo.y, ufo.targetX - ufo.x);
-                const targetDx = Math.cos(angle) * ufo.speed;
-                const targetDy = Math.sin(angle) * ufo.speed;
-                ufo.dx += (targetDx - ufo.dx) * 0.1;
-                ufo.dy += (targetDy - ufo.dy) * 0.1;
+                const desiredDx = Math.cos(angle) * ufo.speed;
+                const desiredDy = Math.sin(angle) * ufo.speed;
+                
+                ufo.dx += (desiredDx - ufo.dx) * 0.1; // Approach desired velocity
+                ufo.dy += (desiredDy - ufo.dy) * 0.1;
+
                 const distToTargetSq = (ufo.targetX - ufo.x)**2 + (ufo.targetY - ufo.y)**2;
-                if (distToTargetSq < (ufo.speed * 2)**2) {
-                     if(!isTouchingCanvas) { 
-                        ufo.dx *= 0.9; ufo.dy *= 0.9;
-                        if (Math.abs(ufo.dx) < 0.1 && Math.abs(ufo.dy) < 0.1) {
-                            ufo.dx = 0; ufo.dy = 0; ufo.isMoving = false;
+                if (distToTargetSq < (ufo.speed * 1.5)**2) { // If close to target
+                     if(ufoMoveTouchId === null) { // And not actively dragging for movement
+                        ufo.dx *= 0.9; ufo.dy *= 0.9; // Start slowing down
+                        if (Math.abs(ufo.dx) < 0.05 && Math.abs(ufo.dy) < 0.05) {
+                            ufo.dx = 0; ufo.dy = 0; ufo.isMoving = false; // Come to a stop
                         }
                      }
                 }
-            } else { 
+            } else { // Not actively moving towards a different target, gradually slow down
                 ufo.dx *= 0.95; ufo.dy *= 0.95;
-                if (Math.abs(ufo.dx) < 0.1) ufo.dx = 0;
-                if (Math.abs(ufo.dy) < 0.1) ufo.dy = 0;
+                if (Math.abs(ufo.dx) < 0.05) ufo.dx = 0;
+                if (Math.abs(ufo.dy) < 0.05) ufo.dy = 0;
             }
             ufo.x += ufo.dx; ufo.y += ufo.dy;
 
@@ -504,31 +509,32 @@
 
             // Beam Length interpolation
             if (Math.abs(ufo.beamCurrentLength - ufo.beamTargetLength) > 0.5) {
-                ufo.beamCurrentLength += (ufo.beamTargetLength - ufo.beamCurrentLength) * 0.2; // Smooth transition
+                ufo.beamCurrentLength += (ufo.beamTargetLength - ufo.beamCurrentLength) * 0.25; // Faster interpolation
             } else {
                 ufo.beamCurrentLength = ufo.beamTargetLength;
             }
 
-            // Beam Logic
+            // Beam Logic & Object Capture
             if (ufo.beamActive && ufo.energy > 0) {
-                ufo.energy -= 0.05; // Slightly lower continuous cost
-                if (ufo.energy < 0) ufo.energy = 0;
+                ufo.energy -= 0.05; 
+                if (ufo.energy < 0) {ufo.energy = 0; ufo.beamActive = false; beamButton.classList.remove('active'); if (soundsReady && beamSynthLoop.state === "started") beamSynthLoop.triggerRelease();}
 
-                if (!ufo.heldObject) {
+
+                if (!ufo.heldObject) { // Try to capture an object
                     let closestObject = null; let minDistanceSq = Infinity;
                     const beamWorldX = ufo.x; 
                     const beamTipWorldY = ufo.y + ufo.height / 2 + ufo.beamCurrentLength;
 
                     gameObjects.forEach(obj => {
                         if (obj.isFalling || obj === ufo.heldObject) return;
-                        // Check if object is within beam's cone
                         const lateralDist = Math.abs(obj.x - beamWorldX);
-                        const verticalDist = Math.abs(obj.y - beamTipWorldY);
-                        const beamEffectiveRadius = ufo.beamWidth + obj.width/2; // More generous capture
+                        // Check if object is roughly under the beam width and near the beam tip vertically
+                        const beamEffectiveRadiusAtTip = ufo.beamWidth * 1.5 + obj.width/2; // Wider capture area at tip
+                        const verticalDistToTip = Math.abs(obj.y - beamTipWorldY);
                         
-                        if (lateralDist < beamEffectiveRadius && verticalDist < obj.height + 20) { // Check vertical proximity to tip
-                            const distSq = (obj.x - beamWorldX)**2 + (obj.y - beamTipWorldY)**2;
-                            if (distSq < minDistanceSq && obj.mass < 500) {
+                        if (lateralDist < beamEffectiveRadiusAtTip && verticalDistToTip < (obj.height/2 + ufo.beamWidth * 2) ) { 
+                            const distSq = (obj.x - beamWorldX)**2 + (obj.y - beamTipWorldY)**2; // Prioritize objects closer to exact tip
+                            if (distSq < minDistanceSq && obj.mass < 5000) { // Increased mass limit for larger objects (like houses)
                                 closestObject = obj;
                                 minDistanceSq = distSq;
                             }
@@ -537,19 +543,20 @@
 
                     if (closestObject) {
                         ufo.heldObject = closestObject;
-                        ufo.heldObject.heldAngle = 0; // Reset swing angle
+                        ufo.heldObject.heldAngle = 0; 
                         ufo.heldObject.heldAngleVel = 0;
-                        if (soundsReady) synth.triggerAttackRelease("G4", "0.1s");
+                        ufo.heldObject.isFalling = false; // Ensure it's not falling when picked up
+                        if (soundsReady && synth) synth.triggerAttackRelease("G4", "0.1s");
                         debugLog(`Picked up ${ufo.heldObject.type}`);
                     }
                 }
-            } else { // Beam is not active or no energy
-                if (ufo.beamActive && ufo.energy <= 0) { 
-                    ufo.beamActive = false; // Turn off beam
+            } else { // Beam is not active (or no energy)
+                if (ufo.beamActive && ufo.energy <= 0) { // Auto-shutoff if energy depleted
+                    ufo.beamActive = false; 
                     beamButton.classList.remove('active');
                     if (soundsReady && beamSynthLoop && beamSynthLoop.state === "started") beamSynthLoop.triggerRelease();
-                    if (soundsReady) synth.triggerAttackRelease("C3", "0.5s"); 
-                    if (ufo.heldObject) { // Drop object if energy runs out
+                    if (soundsReady && synth) synth.triggerAttackRelease("C3", "0.5s"); 
+                    if (ufo.heldObject) { 
                         ufo.heldObject.isFalling = true;
                         ufo.heldObject = null;
                     }
@@ -558,73 +565,61 @@
             
             // Held Object Logic & Swinging & Assimilation
             if (ufo.heldObject) {
-                ufo.energy -= 0.02 * (ufo.heldObject.mass / 100); // Energy cost to hold
+                ufo.energy -= 0.005 * (ufo.heldObject.mass / 100); // Lower energy cost to hold
 
-                // Swinging physics (simple pendulum)
                 const beamAnchorX = ufo.x;
                 const beamAnchorY = ufo.y + ufo.height / 2;
-                const restX = beamAnchorX; // Target X directly under UFO
-                const restY = beamAnchorY + ufo.beamCurrentLength; // Target Y at beam end
+                
+                // Pendulum physics for swinging
+                const gravityEffect = 0.002; // How much gravity pulls it down
+                const ufoDragEffect = 0.005; // How much UFO movement drags the object's angle
 
-                // Calculate current object position based on angle for rendering
-                const actualHeldX = beamAnchorX + Math.sin(ufo.heldObject.heldAngle) * ufo.beamCurrentLength;
-                const actualHeldY = beamAnchorY + Math.cos(ufo.heldObject.heldAngle) * ufo.beamCurrentLength;
-                
-                // Force pulling towards rest position (center of beam)
-                // More complex: treat beam as a spring-damper system for angle
-                const angleToRest = Math.atan2(ufo.x - actualHeldX, (ufo.y + ufo.height/2 + ufo.beamCurrentLength) - actualHeldY);
-                const targetAngle = 0; // Target is straight down
-                
-                let restoringForce = (targetAngle - ufo.heldObject.heldAngle) * 0.005; // Spring constant for angle
-                restoringForce -= ufo.heldObject.heldAngleVel * 0.05; // Damping for angle
+                // Force from UFO's horizontal movement (dx)
+                let angleForce = -ufo.dx * ufoDragEffect / (ufo.beamCurrentLength * 0.1 + 1);
+                // Restoring force (gravity pulling it straight down)
+                angleForce -= Math.sin(ufo.heldObject.heldAngle) * gravityEffect;
 
-                // Influence from UFO movement
-                const ufoInfluence = ufo.dx / (ufo.beamCurrentLength * 0.1 + 1); // UFO dx affects angular velocity
-                ufo.heldObject.heldAngleVel += restoringForce - ufoInfluence * 0.01;
-                
+                ufo.heldObject.heldAngleVel += angleForce;
+                ufo.heldObject.heldAngleVel *= 0.97; // Damping for angular velocity
                 ufo.heldObject.heldAngle += ufo.heldObject.heldAngleVel;
-                ufo.heldObject.heldAngleVel *= 0.95; // General damping
-
-                // Clamp angle to avoid excessive swinging
-                ufo.heldObject.heldAngle = Math.max(-Math.PI/2.5, Math.min(Math.PI/2.5, ufo.heldObject.heldAngle));
-
+                
+                ufo.heldObject.heldAngle = Math.max(-Math.PI/2.2, Math.min(Math.PI/2.2, ufo.heldObject.heldAngle)); // Clamp swing
 
                 ufo.heldObject.x = beamAnchorX + Math.sin(ufo.heldObject.heldAngle) * ufo.beamCurrentLength;
                 ufo.heldObject.y = beamAnchorY + Math.cos(ufo.heldObject.heldAngle) * ufo.beamCurrentLength;
-                
                 ufo.heldObject.isFalling = false;
 
                 // Assimilation Check
-                if (ufo.heldObject.canBeAssimilated && ufo.beamCurrentLength <= UFO_MIN_BEAM_LENGTH + 5 && ufo.energy > 10) {
-                    if (soundsReady) assimilateSynth.triggerAttackRelease("C4", "1s");
+                if (ufo.heldObject.canBeAssimilated && ufo.beamCurrentLength <= UFO_MIN_BEAM_LENGTH + 10 && ufo.energy > 10) {
+                    if (soundsReady && assimilateSynth) assimilateSynth.triggerAttackRelease("C4", "1s");
                     debugLog(`Assimilating ${ufo.heldObject.type}`);
                     ufo.energy -= 10; 
                     if(ufo.heldObject.biomatterYield) ufo.biomatter += ufo.heldObject.biomatterYield;
-                    if(ufo.heldObject.psycheTraceYield) ufo.psycheTrace += ufo.heldObject.psycheTraceYield;
+                    // if(ufo.heldObject.psycheTraceYield) ufo.psycheTrace += ufo.heldObject.psycheTraceYield; // Psyche trace not yet implemented
                     const index = gameObjects.indexOf(ufo.heldObject);
                     if (index > -1) gameObjects.splice(index, 1);
                     ufo.heldObject = null;
-                    // Optional: Turn off beam or retract fully? For now, just releases object.
-                    // ufo.beamActive = false; beamButton.classList.remove('active');
-                    // if (soundsReady && beamSynthLoop.state === "started") beamSynthLoop.triggerRelease();
+                    // Keep beam active after assimilation, player might want to grab something else quickly
                 }
             }
 
             // Update Game Objects (NPCs, etc.)
             gameObjects.forEach(obj => {
-                if (obj === ufo.heldObject) return; // Skip if held
+                if (obj === ufo.heldObject) return; 
 
                 if (obj.type === 'cow') {
                     const ufoDistSq = (obj.x - ufo.x)**2 + (obj.y - ufo.y)**2;
-                    if (ufoDistSq < (150)**2 || obj.fleeTimer > 0) { 
+                    const fleeRadiusSq = ufo.beamActive && ufo.heldObject !== obj ? (250)**2 : (150)**2; // Flee further if beam is active nearby
+
+                    if (ufoDistSq < fleeRadiusSq || obj.fleeTimer > 0) { 
                         obj.state = 'fleeing';
-                        if (obj.fleeTimer <=0) obj.fleeTimer = 180; 
+                        if (obj.fleeTimer <=0) obj.fleeTimer = getRandomInt(120, 240); // Flee for 2-4 seconds
                         const angleToUFO = Math.atan2(ufo.y - obj.y, ufo.x - obj.x);
-                        obj.vx = -Math.cos(angleToUFO) * obj.speed * 2; 
-                        obj.vy = -Math.sin(angleToUFO) * obj.speed * 2;
+                        obj.vx = -Math.cos(angleToUFO) * obj.speed * 2.5; // Flee faster
+                        obj.vy = -Math.sin(angleToUFO) * obj.speed * 2.5;
                     } else {
                         obj.state = 'wandering';
-                        if (Math.random() < 0.01) { 
+                        if (Math.random() < 0.015) { 
                             obj.vx = (Math.random() - 0.5) * obj.speed;
                             obj.vy = (Math.random() - 0.5) * obj.speed;
                         }
@@ -632,19 +627,20 @@
                     obj.x += obj.vx; obj.y += obj.vy;
                     if (obj.fleeTimer > 0) obj.fleeTimer--;
                 } else if (obj.isFalling) {
-                    obj.vy += 0.5; obj.y += obj.vy; obj.x += obj.vx;
-                    const groundLevel = screenToWorld(0, gameHeight - TILE_SIZE/2).y; // More accurate ground
+                    obj.vy += 0.4; // Slightly less gravity
+                    obj.y += obj.vy; obj.x += obj.vx;
+                    const groundLevel = screenToWorld(0, gameHeight - TILE_SIZE/2).y; 
                     if (obj.y > groundLevel - (obj.height || obj.canopyRadius || 10)/2) {
                         obj.y = groundLevel - (obj.height || obj.canopyRadius || 10)/2;
-                        obj.isFalling = false; obj.vx = 0; obj.vy = 0;
-                        if (soundsReady) impactSynth.triggerAttackRelease("C2", "0.3s", Tone.now(), Math.min(0.8, obj.mass/200) );
+                        obj.isFalling = false; obj.vx *= 0.5; obj.vy = 0; // Some bounce/skid
+                        if (soundsReady && impactSynth) impactSynth.triggerAttackRelease("C2", "0.3s", Tone.now(), Math.min(0.8, obj.mass/200) );
                         debugLog(`${obj.type} hit ground.`);
                     }
                 }
             });
 
-            if (ufo.energy < 100) {
-                ufo.energy += 0.05;
+            if (ufo.energy < 100) { // Energy regeneration
+                ufo.energy += 0.03; // Slower regen
                 if (ufo.energy > 100) ufo.energy = 100;
             }
 
@@ -654,11 +650,12 @@
             psycheTraceValueUI.textContent = ufo.psycheTrace.toString().padStart(3, '0');
         }
 
-        // --- Rendering (Beam and UFO rendering adjusted) ---
+        // --- Rendering ---
         function draw() {
             ctx.clearRect(0, 0, gameWidth, gameHeight);
 
-            activeChunks.forEach(chunk => { /* ... unchanged chunk drawing ... */ 
+            // Draw Chunks
+            activeChunks.forEach(chunk => { 
                 const screenPos = worldToScreen(chunk.x * CHUNK_SIZE * TILE_SIZE, chunk.y * CHUNK_SIZE * TILE_SIZE);
                 const chunkSizePixels = CHUNK_SIZE * TILE_SIZE;
                 if (screenPos.x + chunkSizePixels < 0 || screenPos.x > gameWidth ||
@@ -668,75 +665,124 @@
                 ctx.fillStyle = chunk.baseColor || '#2a3f2a'; 
                 ctx.fillRect(screenPos.x, screenPos.y, chunkSizePixels, chunkSizePixels);
             });
+            
+            // Sort objects by Y for pseudo-3D effect (draw things further away first)
+            // Draw UFO and its beam separately to ensure they are layered correctly over/under objects.
+            const allDrawableObjects = [...gameObjects];
+            if (ufo.heldObject) { // Ensure held object is part of the sort if it's not already in gameObjects (it should be)
+                // allDrawableObjects.push(ufo.heldObject); // Not needed if heldObject is always from gameObjects
+            }
+            allDrawableObjects.sort((a,b) => (a.y + (a.height || a.canopyRadius || 0)/2) - (b.y + (b.height || b.canopyRadius || 0)/2));
 
-            gameObjects.sort((a,b) => (a.y + (a.height || 0)/2) - (b.y + (b.height || 0)/2)); // Simple Y-sort for depth
-
-            gameObjects.forEach(obj => { /* ... unchanged object drawing ... */ 
+            // Draw all game objects EXCEPT the UFO and its beam initially
+            allDrawableObjects.forEach(obj => {
+                if (obj === ufo.heldObject && ufo.beamActive) { // If object is held, beam will draw it
+                    return;
+                }
                 const sPos = worldToScreen(obj.x, obj.y);
-                if (sPos.x + (obj.width || obj.canopyRadius || 0) < 0 || sPos.x - (obj.width || obj.canopyRadius || 0) > gameWidth ||
-                    sPos.y + (obj.height || obj.canopyRadius || 0) < 0 || sPos.y - (obj.height || obj.canopyRadius || 0) > gameHeight) {
+                // Basic culling
+                const objRenderWidth = obj.width || (obj.canopyRadius ? obj.canopyRadius * 2 : 20);
+                const objRenderHeight = obj.height || (obj.canopyRadius ? obj.canopyRadius * 2 : 20);
+                if (sPos.x + objRenderWidth/2 < 0 || sPos.x - objRenderWidth/2 > gameWidth ||
+                    sPos.y + objRenderHeight/2 < 0 || sPos.y - objRenderHeight/2 > gameHeight) {
                     return; 
                 }
+
                 ctx.save();
                 ctx.translate(sPos.x, sPos.y);
                 if (obj.type === 'cow') {
                     ctx.fillStyle = obj.color;
                     ctx.beginPath(); ctx.ellipse(0, 0, obj.width / 2, obj.height / 2, 0, 0, Math.PI * 2); ctx.fill();
-                    ctx.beginPath(); ctx.ellipse(obj.width / 2 * (obj.vx > 0 ? 0.6 : -0.6), -obj.height/4, obj.width / 4, obj.height / 4, 0, 0, Math.PI * 2); ctx.fill();
+                    const headOffsetX = obj.width / 2 * (obj.vx > 0 ? 0.6 : (obj.vx < 0 ? -0.6 : 0.3));
+                    ctx.beginPath(); ctx.ellipse(headOffsetX, -obj.height/4, obj.width / 4, obj.height / 4, 0, 0, Math.PI * 2); ctx.fill();
                 } else if (obj.type === 'tree') {
-                    ctx.fillStyle = obj.trunkColor; ctx.fillRect(-obj.trunkWidth / 2, 0, obj.trunkWidth, obj.trunkHeight);
-                    ctx.fillStyle = obj.canopyColor; ctx.beginPath(); ctx.arc(0, -obj.canopyRadius / 2, obj.canopyRadius, 0, Math.PI * 2); ctx.fill();
+                    // Trunk
+                    ctx.fillStyle = obj.trunkColor;
+                    ctx.fillRect(-obj.trunkWidth / 2, -obj.trunkHeight/2, obj.trunkWidth, obj.trunkHeight); // Centered trunk
+                    // Canopy
+                    ctx.fillStyle = obj.canopyColor;
+                    ctx.beginPath();
+                    ctx.arc(0, -obj.trunkHeight/2 -obj.canopyRadius*0.6, obj.canopyRadius, 0, Math.PI * 2); // Canopy above trunk
+                    ctx.fill();
                 } else if (obj.type === 'farmhouse') {
-                    ctx.fillStyle = obj.color; ctx.fillRect(-obj.width/2, -obj.height/2, obj.width, obj.height);
-                    ctx.fillStyle = obj.roofColor; ctx.beginPath(); ctx.moveTo(-obj.width/2 - 5, -obj.height/2);
-                    ctx.lineTo(obj.width/2 + 5, -obj.height/2); ctx.lineTo(0, -obj.height/2 - obj.height*0.4); ctx.closePath(); ctx.fill();
+                    ctx.fillStyle = obj.color;
+                    ctx.fillRect(-obj.width/2, -obj.height/2, obj.width, obj.height);
+                    ctx.fillStyle = obj.roofColor; 
+                    ctx.beginPath(); 
+                    ctx.moveTo(-obj.width/2 - 5, -obj.height/2);
+                    ctx.lineTo(obj.width/2 + 5, -obj.height/2);
+                    ctx.lineTo(0, -obj.height/2 - obj.height*0.4); 
+                    ctx.closePath(); ctx.fill();
                 }
                 ctx.restore();
             });
             
-            // Draw Tractor Beam (BEFORE UFO if object is "behind" it due to swing)
+            // Draw Tractor Beam & Held Object
             const ufoScreenPos = worldToScreen(ufo.x, ufo.y);
             if (ufo.beamActive && ufo.energy > 0) {
                 const beamAnchorScreenX = ufoScreenPos.x;
-                const beamAnchorScreenY = ufoScreenPos.y + ufo.height / 2;
+                const beamAnchorScreenY = ufoScreenPos.y + ufo.height / 2; // Beam starts from bottom center of UFO body
                 
                 let beamTipScreenX, beamTipScreenY;
                 if (ufo.heldObject) {
                     const heldObjScreenPos = worldToScreen(ufo.heldObject.x, ufo.heldObject.y);
                     beamTipScreenX = heldObjScreenPos.x;
-                     // Adjust tip to be at the center of the object, slightly above its base
-                    beamTipScreenY = heldObjScreenPos.y - (ufo.heldObject.height || ufo.heldObject.canopyRadius || 10) * 0.25;
+                    beamTipScreenY = heldObjScreenPos.y - (ufo.heldObject.height || ufo.heldObject.canopyRadius || 10) * 0.1; // Connect near top of object
+
+                    // Draw held object (it's part of the beam effect)
+                    ctx.save();
+                    ctx.translate(heldObjScreenPos.x, heldObjScreenPos.y);
+                    // Could add rotation based on heldAngle if desired, but for top-down it might look odd
+                    // ctx.rotate(ufo.heldObject.heldAngle * 0.1); // Subtle rotation based on swing
+                    if (ufo.heldObject.type === 'cow') {
+                        ctx.fillStyle = ufo.heldObject.color;
+                        ctx.beginPath(); ctx.ellipse(0,0, ufo.heldObject.width/2, ufo.heldObject.height/2,0,0,Math.PI*2); ctx.fill();
+                        ctx.beginPath(); ctx.ellipse(ufo.heldObject.width/3, -ufo.heldObject.height/4, ufo.heldObject.width/4, ufo.heldObject.height/4,0,0,Math.PI*2); ctx.fill();
+                    } else if (ufo.heldObject.type === 'tree') {
+                        ctx.fillStyle = ufo.heldObject.trunkColor; ctx.fillRect(-ufo.heldObject.trunkWidth/2, -ufo.heldObject.trunkHeight/2, ufo.heldObject.trunkWidth, ufo.heldObject.trunkHeight);
+                        ctx.fillStyle = ufo.heldObject.canopyColor; ctx.beginPath(); ctx.arc(0, -ufo.heldObject.trunkHeight/2 -ufo.heldObject.canopyRadius*0.6, ufo.heldObject.canopyRadius,0,Math.PI*2); ctx.fill();
+                    } else if (ufo.heldObject.type === 'farmhouse') {
+                        ctx.fillStyle = ufo.heldObject.color; ctx.fillRect(-ufo.heldObject.width/2, -ufo.heldObject.height/2, ufo.heldObject.width, ufo.heldObject.height);
+                        ctx.fillStyle = ufo.heldObject.roofColor; ctx.beginPath(); ctx.moveTo(-ufo.heldObject.width/2-5,-ufo.heldObject.height/2); ctx.lineTo(ufo.heldObject.width/2+5,-ufo.heldObject.height/2); ctx.lineTo(0,-ufo.heldObject.height/2-ufo.heldObject.height*0.4); ctx.closePath(); ctx.fill();
+                    }
+                    ctx.restore();
                 } else {
-                    beamTipScreenX = beamAnchorScreenX; // Straight down if nothing held
+                    beamTipScreenX = beamAnchorScreenX; 
                     beamTipScreenY = beamAnchorScreenY + ufo.beamCurrentLength;
                 }
 
+                // Draw the beam itself
                 ctx.beginPath();
-                // Wider at UFO, tapers towards tip or object
-                ctx.moveTo(beamAnchorScreenX - ufo.beamWidth, beamAnchorScreenY);
-                ctx.lineTo(beamTipScreenX - ufo.beamWidth * 0.3, beamTipScreenY); // Tapered end
-                ctx.lineTo(beamTipScreenX + ufo.beamWidth * 0.3, beamTipScreenY);
-                ctx.lineTo(beamAnchorScreenX + ufo.beamWidth, beamAnchorScreenY);
+                const beamWidthAtUFO = ufo.beamWidth * 1.5;
+                const beamWidthAtTip = ufo.beamWidth * (ufo.heldObject ? 0.8 : 0.3); // Narrower if not holding
+                ctx.moveTo(beamAnchorScreenX - beamWidthAtUFO, beamAnchorScreenY);
+                ctx.lineTo(beamTipScreenX - beamWidthAtTip, beamTipScreenY); 
+                ctx.lineTo(beamTipScreenX + beamWidthAtTip, beamTipScreenY);
+                ctx.lineTo(beamAnchorScreenX + beamWidthAtUFO, beamAnchorScreenY);
                 ctx.closePath();
 
                 const gradient = ctx.createLinearGradient(beamAnchorScreenX, beamAnchorScreenY, beamTipScreenX, beamTipScreenY);
-                gradient.addColorStop(0, 'rgba(0, 255, 255, 0.2)');
-                gradient.addColorStop(0.5, 'rgba(0, 255, 255, 0.6)');
-                gradient.addColorStop(1, 'rgba(0, 255, 255, 0.2)');
+                const alpha = 0.1 + (ufo.beamCurrentLength / UFO_MAX_BEAM_LENGTH) * 0.5; // Beam intensity based on length
+                gradient.addColorStop(0, `rgba(0, 255, 255, ${alpha * 0.5})`);
+                gradient.addColorStop(0.5, `rgba(0, 255, 255, ${alpha})`);
+                gradient.addColorStop(1, `rgba(0, 255, 255, ${alpha * 0.3})`);
                 ctx.fillStyle = gradient;
                 ctx.fill();
             }
 
-            // Draw UFO
+            // Draw UFO (on top of everything or beam)
             ctx.save();
             ctx.translate(ufoScreenPos.x, ufoScreenPos.y);
-            ctx.fillStyle = 'rgba(0,0,0,0.3)';
-            ctx.beginPath(); ctx.ellipse(0, ufo.height / 2 + 5, ufo.width / 2, ufo.width / 4, 0, 0, Math.PI * 2); ctx.fill();
+            // Shadow
+            ctx.fillStyle = 'rgba(0,0,0,0.25)';
+            ctx.beginPath(); ctx.ellipse(0, ufo.height / 2 + 8, ufo.width / 1.8, ufo.width / 3.5, 0, 0, Math.PI * 2); ctx.fill();
+            // Body
             ctx.fillStyle = '#7f8c8d'; 
             ctx.beginPath(); ctx.ellipse(0, 0, ufo.width / 2, ufo.height / 2, 0, 0, Math.PI * 2); ctx.fill();
             ctx.strokeStyle = '#95a5a6'; ctx.lineWidth = 2; ctx.stroke();
+            // Dome
             ctx.fillStyle = '#3498db'; 
-            ctx.beginPath(); ctx.ellipse(0, -ufo.height / 4, ufo.width / 3, ufo.domeHeight / 2, 0, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.ellipse(0, -ufo.height / 3.5, ufo.width / 3, ufo.domeHeight / 1.8, 0, 0, Math.PI * 2); ctx.fill();
             ctx.strokeStyle = '#5dade2'; ctx.stroke();
             ctx.restore();
         }
@@ -744,8 +790,10 @@
         // --- Game Loop ---
         let lastTime = 0;
         function gameLoop(timestamp) {
-            const deltaTime = (timestamp - lastTime) / 1000; 
+            const deltaTime = Math.min(0.05, (timestamp - lastTime) / 1000); // Cap deltaTime to prevent large jumps
             lastTime = timestamp;
+            if (soundsReady && Tone.Transport.state !== "started") Tone.Transport.start(); // Ensure transport is running
+
             update(deltaTime);
             draw();
             requestAnimationFrame(gameLoop);
@@ -754,26 +802,24 @@
         // --- Initialization ---
         window.addEventListener('resize', resizeCanvas);
         
-        canvas.addEventListener('pointerdown', handleCanvasPointerDown, { passive: false });
-        canvas.addEventListener('pointermove', handleCanvasPointerMove, { passive: false });
-        canvas.addEventListener('pointerup', handleCanvasPointerUp, { passive: false });
-        canvas.addEventListener('pointercancel', handleCanvasPointerUp, { passive: false });
-
         resizeCanvas(); 
-        ufo.x = 0; ufo.y = 0;
+        ufo.x = 0; ufo.y = 0; // Start at world origin
         ufo.targetX = ufo.x; ufo.targetY = ufo.y;
         camera.x = ufo.x - ufo.screenX; camera.y = ufo.y - ufo.screenY;
         updateActiveChunks(); 
-        if(gameObjects.length < 5) {
-            for(let i=0; i<5; i++) gameObjects.push(createCow(Math.random()*500-250, Math.random()*500-250));
+        if(gameObjects.length < 8) { // Add a few more initial objects
+            for(let i=0; i<8; i++) {
+                 if(Math.random() < 0.7) gameObjects.push(createCow(getRandomInt(-300,300), getRandomInt(-300,300)));
+                 else gameObjects.push(createTree(getRandomInt(-300,300), getRandomInt(-300,300)));
+            }
         }
         setTimeout(() => {
             if (!directiveMessageUI.classList.contains('hidden')) {
                 directiveMessageUI.classList.add('hidden');
             }
-        }, 7000); // Slightly longer initial message display
+        }, 6000); 
 
-        debugLog("Game v0.2 initialized. Beam overhaul.");
+        debugLog("Game v0.2.1 initialized. Beam/Control Refinements.");
         requestAnimationFrame(gameLoop);
 
     </script>
